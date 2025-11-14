@@ -85,8 +85,11 @@
       score: 0,
       points: 0,
       animFrame: 0,
-      animTimer: 0
+      animTimer: 0,
+      shieldCharges: 0,
+      invulnerableTimer: 0
     };
+    const MAX_SHIELDS = 3;
 
     const upgrades = {
       fireRateLevel: 0,
@@ -131,6 +134,11 @@
 
     let enemySpawnTimer = 0;
     let shopOpen = false;
+    let paused = false;
+
+    let comboCount = 0;
+    let comboTimer = 0;
+    const COMBO_TIMEOUT = 240;
 
     // Waves
     let wave = 1;
@@ -247,6 +255,8 @@
       player.points = 0;
       player.animFrame = 0;
       player.animTimer = 0;
+      player.shieldCharges = 0;
+      player.invulnerableTimer = 0;
 
       upgrades.fireRateLevel = 0;
       upgrades.speedLevel = 0;
@@ -260,6 +270,9 @@
 
       enemySpawnTimer = 60;
       shopOpen = false;
+      paused = false;
+
+      resetCombo();
 
       wave = 1;
       killsInWave = 0;
@@ -372,8 +385,13 @@
       const dropChance = enemy.isBoss ? 0.7 : 0.35;
       if (Math.random() >= dropChance) return;
 
-      const type = Math.random() < 0.5 ? 'health' : 'points';
-      const amount = type === 'points' ? (enemy.isBoss ? 30 : 15) : 1;
+      const roll = Math.random();
+      let type = 'points';
+      if (roll < 0.35) type = 'health';
+      else if (roll > 0.75) type = 'shield';
+
+      let amount = 1;
+      if (type === 'points') amount = enemy.isBoss ? 30 : 15;
 
       pickups.push({
         x: enemy.x + enemy.width / 2 - 10,
@@ -401,6 +419,9 @@
           if (p.type === 'health') {
             if (player.lives < player.maxLives) player.lives++;
             else player.score += 5;
+          } else if (p.type === 'shield') {
+            player.shieldCharges = Math.min(player.shieldCharges + 1, MAX_SHIELDS);
+            player.score += 8;
           } else {
             player.points += p.amount;
             player.score += Math.floor(p.amount / 2);
@@ -408,6 +429,24 @@
           pickups.splice(i, 1);
         }
       }
+    }
+
+    function resetCombo() {
+      comboCount = 0;
+      comboTimer = 0;
+    }
+
+    function getComboMultiplier() {
+      return 1 + Math.floor(comboCount / 5) * 0.25;
+    }
+
+    function applyKillRewards(enemy) {
+      comboCount++;
+      comboTimer = COMBO_TIMEOUT;
+      const baseReward = enemy.isBoss ? 30 : 10;
+      const finalReward = Math.round(baseReward * getComboMultiplier());
+      player.score += finalReward;
+      player.points += finalReward;
     }
 
     // ---- UPDATE PRINCIPAL ----
@@ -445,6 +484,17 @@
       }
 
       // PLAYING
+      if (justPressed['KeyP']) {
+        paused = !paused;
+        clearJustPressed();
+        return;
+      }
+
+      if (paused) {
+        clearJustPressed();
+        return;
+      }
+
       if (justPressed['KeyL']) {
         shopOpen = !shopOpen;
       }
@@ -460,6 +510,12 @@
 
       // Movimento do player + animação
       let movingHoriz = false;
+
+      if (player.invulnerableTimer > 0) player.invulnerableTimer--;
+      if (comboTimer > 0) {
+        comboTimer--;
+        if (comboTimer <= 0) resetCombo();
+      }
 
       if (keys['ArrowLeft']) {
         player.x -= player.speed;
@@ -582,9 +638,7 @@
             bullets.splice(j, 1);
 
             if (e.hp <= 0) {
-              const reward = e.isBoss ? 30 : 10;
-              player.score += reward;
-              player.points += reward;
+              applyKillRewards(e);
               enemies.splice(i, 1);
               playSound('enemyDie', 0.7);
               maybeDropPickup(e);
@@ -610,10 +664,22 @@
     }
 
     function hitPlayer() {
+      if (player.invulnerableTimer > 0) return;
+
+      if (player.shieldCharges > 0) {
+        player.shieldCharges--;
+        player.invulnerableTimer = 45;
+        playSound('hit', 0.5);
+        return;
+      }
+
       player.lives--;
+      player.invulnerableTimer = 60;
+      resetCombo();
       playSound('hit', 0.7);
 
       if (player.lives <= 0) {
+        paused = false;
         gameState = 'gameover';
         saveHighScore();
         playSound('gameOver', 0.9);
@@ -672,6 +738,14 @@
         // fallback
         ctx.fillStyle = '#111';
         ctx.fillRect(player.x, player.y, player.width, player.height);
+      }
+
+      if (player.shieldCharges > 0 || player.invulnerableTimer > 0) {
+        ctx.save();
+        ctx.strokeStyle = player.shieldCharges > 0 ? 'rgba(128, 222, 234, 0.9)' : 'rgba(255, 255, 255, 0.6)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(player.x - 4, player.y - 4, player.width + 8, player.height + 8);
+        ctx.restore();
       }
 
       // Arma simples
@@ -769,6 +843,19 @@
           ctx.lineTo(cx, cy + 10);
           ctx.lineTo(cx + 9, cy + 2);
           ctx.fill();
+        } else if (p.type === 'shield') {
+          const cx = p.x + p.width / 2;
+          const cy = p.y + p.height / 2;
+          ctx.fillStyle = '#4dd0e1';
+          ctx.beginPath();
+          ctx.moveTo(cx, cy - 10);
+          ctx.lineTo(cx + 10, cy);
+          ctx.lineTo(cx, cy + 12);
+          ctx.lineTo(cx - 10, cy);
+          ctx.closePath();
+          ctx.fill();
+          ctx.strokeStyle = '#006064';
+          ctx.stroke();
         } else {
           ctx.fillStyle = '#ffeb3b';
           ctx.beginPath();
@@ -786,7 +873,7 @@
     // ---- HUD ----
     function drawHUD() {
       ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
-      ctx.fillRect(0, 0, WIDTH, 40);
+      ctx.fillRect(0, 0, WIDTH, 70);
 
       ctx.fillStyle = '#fff';
       ctx.font = '18px sans-serif';
@@ -795,6 +882,10 @@
         heartsText += i < player.lives ? '❤ ' : '♡ ';
       }
       ctx.fillText(heartsText, 10, 25);
+
+      ctx.font = '14px sans-serif';
+      ctx.fillText(`Escudos: ${player.shieldCharges}/${MAX_SHIELDS}`, 10, 42);
+      ctx.font = '18px sans-serif';
 
       const waveName = waveNames[Math.min(wave - 1, waveNames.length - 1)];
       ctx.textAlign = 'center';
@@ -815,6 +906,23 @@
         24
       );
       ctx.textAlign = 'left';
+
+      if (comboCount > 0) {
+        const ratio = Math.max(0, comboTimer) / COMBO_TIMEOUT;
+        ctx.textAlign = 'right';
+        ctx.fillStyle = '#ffd54f';
+        ctx.fillText(
+          `Combo ${comboCount} | x${getComboMultiplier().toFixed(2)}`,
+          WIDTH - 10,
+          44
+        );
+        ctx.fillStyle = 'rgba(255, 213, 79, 0.35)';
+        ctx.fillRect(WIDTH - 180, 50, 160, 6);
+        ctx.fillStyle = '#ffd54f';
+        ctx.fillRect(WIDTH - 180, 50, 160 * ratio, 6);
+        ctx.textAlign = 'left';
+        ctx.fillStyle = '#fff';
+      }
     }
 
     // ---- LOJA ----
@@ -911,11 +1019,14 @@
       ctx.fillText('Pulo: ↑', x, y); y += 24;
       ctx.fillText('Atirar: Espaço', x, y); y += 24;
       ctx.fillText('Abrir/fechar loja: L', x, y); y += 24;
+      ctx.fillText('Pausar: P', x, y); y += 24;
       ctx.fillText('Na loja: 1 = Cadência, 2 = Vel., 3 = Dano, 4 = Vida', x, y); y += 30;
       ctx.fillText('Inimigos dão pontos e pontos de upgrade.', x, y); y += 24;
       ctx.fillText('Drops:', x, y); y += 24;
       ctx.fillText('- Coração: recupera vida (ou pontos extra).', x + 20, y); y += 24;
       ctx.fillText('- Moeda: pontos + pontos de upgrade.', x + 20, y); y += 24;
+      ctx.fillText('- Escudo azul: bloqueia o próximo dano.', x + 20, y); y += 24;
+      ctx.fillText('Mate rápido para manter o combo e ganhar bônus.', x, y); y += 24;
       ctx.fillText('Waves: Favela → Copacabana → Centro → Infinito.', x, y); y += 24;
       ctx.fillText('ENTER ou ESC volta ao menu.', x, y);
 
@@ -939,6 +1050,19 @@
       ctx.textAlign = 'left';
     }
 
+    function drawPauseOverlay() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+      ctx.fillRect(0, 0, WIDTH, HEIGHT);
+
+      ctx.fillStyle = '#fff';
+      ctx.textAlign = 'center';
+      ctx.font = '32px sans-serif';
+      ctx.fillText('PAUSADO', WIDTH / 2, HEIGHT / 2 - 10);
+      ctx.font = '18px sans-serif';
+      ctx.fillText('Pressione P para continuar', WIDTH / 2, HEIGHT / 2 + 20);
+      ctx.textAlign = 'left';
+    }
+
     // ---- LOOP ----
     function loop() {
       drawBackground();
@@ -956,6 +1080,7 @@
       if (gameState === 'menu') drawMenu();
       if (gameState === 'instructions') drawInstructionsScreen();
       if (gameState === 'gameover') drawGameOver();
+      if (gameState === 'playing' && paused) drawPauseOverlay();
 
       requestAnimationFrame(loop);
     }
